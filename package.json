@@ -1,0 +1,47 @@
+{
+  "name": "buildkite-results",
+  "displayName": "Buildkite Results",
+  "description": "Inline annotation of Buildkite CI failures in VS Code",
+  "repository": {
+    "type": "git",
+    "url": ""
+  },
+  "publisher": "Ben Pritchard",
+  "license": "MIT",
+  "version": "0.0.1",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "main": "./extension.js",
+  "activationEvents": [
+    "workspaceContains:.buildkite"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "buildkiteResults.fetchResults",
+        "title": "Buildkite: Fetch Results"
+      }
+    ],
+    "configuration": {
+      "title": "Buildkite Results",
+      "properties": {
+        "buildkiteResults.org": {
+          "type": "string",
+          "default": "",
+          "description": "Your Buildkite organization slug"
+        },
+        "buildkiteResults.ignoredBranches": {
+          "type": "string",
+          "default": "develop,main,master",
+          "description": "Comma-separated list of branch names to ignore when polling Buildkite."
+        }
+      }
+    }
+  },
+  "dependencies": {
+    "node-fetch": "^2.6.9",
+    "p-limit": "^6.2.0"
+  },
+  "type": "commonjs"
+}
