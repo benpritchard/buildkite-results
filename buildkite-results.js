@@ -17,6 +17,7 @@ let branchDidChange = false;
 let schedulerTimeout = null;
 let inProgress = false;
 let statusBarItem;
+let currentBranch = null;
 
 function createStatusBarItem(context) {
   if (!hasBuildkiteFolder()) return;
@@ -205,7 +206,7 @@ function log(message) {
   const second = pad(now.getSeconds());
 
   const timestamp = `${year}-${month}-${day} ${hour}:${minute}:${second}`;
-  outputChannel.appendLine(`[Buildkite] ${timestamp}: ${message}`);
+  outputChannel.appendLine(`[Buildkite] ${timestamp}: (${currentBranch}) ${message}`);
 }
 
 function sanitizeBranchName(branch) {
@@ -284,6 +285,7 @@ async function getCurrentBranch() {
     const head = fs.readFileSync(path.join(workspaceRoot, '.git', 'HEAD'), 'utf8').trim();
     const match = head.match(/^ref: refs\/heads\/(.+)$/);
     const branch = match ? match[1] : null;
+    currentBranch = branch;
     return branch;
   } catch (err) {
     log('Error reading git branch: ' + err.message);
@@ -614,6 +616,7 @@ async function annotateFailures({ build, org, pipeline, branch }) {
   };
 
   const limit = pLimit(4);
+  const combinedDiagnostics = new Map();
 
   const jobTasks = build.jobs.map(job =>
     limit(async () => {
@@ -634,17 +637,33 @@ async function annotateFailures({ build, org, pipeline, branch }) {
       }
 
       const resultsMap = await extractResultsFromRspecJson(json, org, pipeline, branch, build.number, job.id);
+
       for (const [uri, results] of resultsMap.entries()) {
-        buildkiteDiagnostics.set(uri, results);
+        const key = uri.fsPath;
+        if (!combinedDiagnostics.has(key)) {
+          combinedDiagnostics.set(key, { uri, diagnostics: [] });
+        }
+        combinedDiagnostics.get(key).diagnostics.push(...results);
       }
 
       meta.jobs[job.id] = { state: job.state, artifact_cached: true };
     })
   );
 
-  log('Annotating...')
-
+  log('Annotating...');
   await Promise.allSettled(jobTasks);
+
+  for (const { uri, diagnostics } of combinedDiagnostics.values()) {
+    const seen = new Set();
+    const unique = diagnostics.filter(d => {
+      const key = `${d.range.start.line}:${d.message}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+
+    buildkiteDiagnostics.set(uri, unique);
+  }
 
   if (!isCached) {
     saveMeta(branch, build.number, meta);
