@@ -9,7 +9,7 @@ const BUILDKITE_API_TOKEN = getTokenFromNetrc();
 const BUILDS_TO_KEEP = 2;
 const INCOMPLETE_STATES = ['running', 'scheduled', 'not_run', 'canceled'];
 const buildkiteDiagnostics = vscode.languages.createDiagnosticCollection('buildkite');
-const outputChannel = vscode.window.createOutputChannel('Buildkite Results');
+const outputChannel = vscode.window.createOutputChannel('Buildkite Results', { log: true });
 const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
 const baseCacheDir = path.join(workspaceRoot, 'tmp', 'buildkite-results');
 let pipelineDir = null;
@@ -18,6 +18,13 @@ let schedulerTimeout = null;
 let inProgress = false;
 let statusBarItem;
 let currentBranch = null;
+
+function log(message) {
+  const branchPart = currentBranch ? `${currentBranch} ` : '';
+  const line = `${branchPart}${message}`;
+
+  outputChannel.info(line)
+}
 
 function createStatusBarItem(context) {
   if (!hasBuildkiteFolder()) return;
@@ -157,8 +164,10 @@ async function scheduleNext() {
   }
 
   if (!isWithinWorkHours()) {
-    log('Outside work hours. Will retry in 1 hour.');
-    schedulerTimeout = setTimeout(scheduleNext, 60 * 60 * 1000);
+    const delay = delayUntilNextWorkStart();
+    const minutes = Math.round(delay / 60000);
+    log(`Outside work hours. Will retry in ${minutes} minute${minutes !== 1 ? 's' : ''}.`);
+    schedulerTimeout = setTimeout(scheduleNext, delay);
     return;
   }
 
@@ -178,6 +187,29 @@ async function scheduleNext() {
   }, delay);
 }
 
+function delayUntilNextWorkStart() {
+  const now = new Date();
+
+  // Clone, then move the clock to 08:00 today
+  const next = new Date(now);
+  next.setHours(8, 0, 0, 0);
+
+  // Already inside work hours?
+  if (isWithinWorkHours()) return 0;
+
+  // If it’s after 18:00, or it’s a weekend, bump forward
+  while (
+    next <= now ||               // time has passed
+    next.getDay() === 0 ||       // Sunday
+    next.getDay() === 6          // Saturday
+  ) {
+    next.setDate(next.getDate() + 1);
+    next.setHours(8, 0, 0, 0);
+  }
+
+  return next - now;             // milliseconds to wait
+}
+
 function getLastKnownBuildState(branch) {
   const cached = loadPreviousMeta(branch);
   if (cached?.state) {
@@ -192,21 +224,6 @@ function isWithinWorkHours() {
   const day = now.getDay(); // Sunday = 0, Saturday = 6
   const hour = now.getHours();
   return day >= 1 && day <= 5 && hour >= 8 && hour < 18;
-}
-
-function log(message) {
-  const now = new Date();
-  const pad = (n) => n.toString().padStart(2, '0');
-
-  const year = now.getFullYear();
-  const month = pad(now.getMonth() + 1);
-  const day = pad(now.getDate());
-  const hour = pad(now.getHours());
-  const minute = pad(now.getMinutes());
-  const second = pad(now.getSeconds());
-
-  const timestamp = `${year}-${month}-${day} ${hour}:${minute}:${second}`;
-  outputChannel.appendLine(`[Buildkite] ${timestamp}: (${currentBranch}) ${message}`);
 }
 
 function sanitizeBranchName(branch) {
@@ -367,7 +384,7 @@ async function fetchArtifactDownloadUrl(org, pipeline, buildNumber, jobId, pathS
   });
 
   if (!res.ok) {
-    log(`Failed to fetch artifacts for download resolution`);
+    log(`Failed to fetch artifacts for download resolution`, `warn`);
     return null;
   }
 
