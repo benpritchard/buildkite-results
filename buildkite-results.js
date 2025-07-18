@@ -133,6 +133,18 @@ function watchBranchChanges(context) {
   watcher.onDidCreate(checkBranch);
   watcher.onDidDelete(checkBranch);
   context.subscriptions.push(watcher);
+
+  const refWatcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(workspaceRoot, `.git/refs/heads/${currentBranch}`));
+  refWatcher.onDidChange(() => {
+    log('Branch updated (possible push or commit)');
+    handlePushOrCommit();
+  });
+  context.subscriptions.push(refWatcher);
+}
+
+async function handlePushOrCommit() {
+  if (inProgress) return;
+  await manualFetchAndAnnotate();
 }
 
 function getIgnoredBranches() {
