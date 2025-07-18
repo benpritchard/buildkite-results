@@ -4,6 +4,7 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const pLimit = require('p-limit').default;
+const { v4: uuidv4 } = require('uuid');
 
 const BUILDKITE_API_TOKEN = getTokenFromNetrc();
 const BUILDS_TO_KEEP = 2;
@@ -18,12 +19,12 @@ let schedulerTimeout = null;
 let inProgress = false;
 let statusBarItem;
 let currentBranch = null;
+let currentFetchToken = null;
 
 function log(message) {
   const branchPart = currentBranch ? `${currentBranch} ` : '';
   const line = `${branchPart}${message}`;
-
-  outputChannel.info(line)
+  outputChannel.info(line);
 }
 
 function createStatusBarItem(context) {
@@ -112,10 +113,12 @@ function watchBranchChanges(context) {
       const headContent = fs.readFileSync(gitHeadPath, 'utf8').trim();
       const branchMatch = headContent.match(/^ref: refs\/heads\/(.+)$/);
       if (branchMatch) {
-        const currentBranch = branchMatch[1];
-        if (currentBranch !== lastBranch) {
-          log(`Branch changed: ${currentBranch}`);
-          lastBranch = currentBranch;
+        const newBranch = branchMatch[1];
+        if (newBranch !== lastBranch) {
+          log(`Branch changed: ${newBranch}`);
+          lastBranch = newBranch;
+          currentBranch = newBranch;
+
           branchDidChange = true;
 
           if (inProgress) {
@@ -133,13 +136,6 @@ function watchBranchChanges(context) {
   watcher.onDidCreate(checkBranch);
   watcher.onDidDelete(checkBranch);
   context.subscriptions.push(watcher);
-
-  const refWatcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(workspaceRoot, `.git/refs/heads/${currentBranch}`));
-  refWatcher.onDidChange(() => {
-    log('Branch updated (possible push or commit)');
-    handlePushOrCommit();
-  });
-  context.subscriptions.push(refWatcher);
 }
 
 async function handlePushOrCommit() {
@@ -157,6 +153,8 @@ function handleBranchChange() {
   buildkiteDiagnostics.clear();
   branchDidChange = false;
   statusBarItem.hide();
+  currentFetchToken = null;
+  inProgress = false;
   manualFetchAndAnnotate();
 }
 
@@ -546,6 +544,9 @@ async function manualFetchAndAnnotate() {
 }
 
 async function fetchAndAnnotate() {
+  const myToken = uuidv4();
+  currentFetchToken = myToken;
+
   const branch = await getCurrentBranch();
   const ignored = getIgnoredBranches();
 
@@ -561,17 +562,22 @@ async function fetchAndAnnotate() {
   inProgress = true;
   try {
     updateStatusBar('fetching');
-    const results = await fetchBuild();
+    const results = await fetchBuild(branch);
 
-    if (branchDidChange) {
-      inProgress = false;
-      handleBranchChange();
+    if (currentFetchToken !== myToken) {
+      log('Fetch cancelled due to branch change.');
       return;
     }
 
     if (results) {
       updateStatusBar('annotating');
-      const build = await annotateFailures(results);
+      const build = await annotateFailures(results, branch);
+
+      if (currentFetchToken !== myToken) {
+        log('Annotation cancelled due to branch change.');
+        return;
+      }
+
       log(`Build #${build.number} [${buildState(build)}]`);
       updateStatusBar(buildState(build));
     } else {
@@ -580,7 +586,9 @@ async function fetchAndAnnotate() {
   } catch (err) {
     log(`Error during fetch or annotation: ${err.message}`);
   } finally {
-    inProgress = false;
+    if (currentFetchToken === myToken) {
+      inProgress = false;
+    }
   }
 }
 
